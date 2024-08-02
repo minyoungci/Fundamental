@@ -8,5 +8,5 @@ nn.Embedding(vocab_size, d_model)은 (vocab_size, d_model) 크기의 가중치 �
 
 입력으로 정수 인덱스(0에서 vocab_size-1 사이의 값)가 주어지면, 해당 인덱스에 해당하는 행(벡터)을 반환합니다.
 
-
+![Alt text](<Screenshot from 2024-08-02 21-00-59.png>)
 
