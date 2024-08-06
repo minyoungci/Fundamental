@@ -228,3 +228,53 @@ def forward(self, q, k, v, mask = None):
         # (Batch, Seq_Len, d_model) --> (Batch, Seq_Len, d_model)   
         return self.w_o(x)
 ```
+
+### MHA를 다른 방법으로 구현해보자
+
+`Multi-Head Attention (MHA)` 메커니즘을 구현한 다른 버전입니다.
+
+앞서 구현한 방법과 큰 차이는 `view()`나 `transpose()`를 사용하지 않고 `rearrange()`를 사용했다는 점이죠. 
+
+이전 구현에서는 PyTorch의 기본 함수인 `view()`와 `transpose()`를 사용하여 텐서의 형상을 변경했습니다. 반면, 이 새로운 구현에서는 `einops` 라이브러리의 `rearrange()`함수를 사용합니다. `rearrange()` 함수는 더 직관적이고 읽기 쉬운 방식으로 텐서 조작을 표현할 수 있게 해줍니다. 예를 들어, `batch seq (h head) -> batch h seq head`와 같은 패턴을 사용하여 텐서의 재배열을 명확하게 지정할 수 있습니다.
+
+그리고 마스킹 적용 방식에 차이가 있습니다. 이전 구현에서는 `masked_fill()` 메서드를 사용했지만, 새 구현에서는 직접 인덱싱을 통해 마스크를 적용합니다. 두 방식 모두 유효하지만, 새 방식이 약간 더 간결합니다.
+
+종합적으로, 새로운 구현은 더 현대적이고 가독성이 높은 접근 방식을 채택하고 있으며, 특히 복잡한 텐서 조작을 다루는 데 있어 더 효과적입니다. 이는 코드의 유지보수성과 확장성을 향상시키는 데 도움이 될 수 있습니다.
+
+```python
+class MHA(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+
+        self.n_heads = n_heads
+
+        self.fc_q = nn.Linear(d_model, d_model) # 차 or 개x차 or 개x개x차 로 입력해줘야
+        self.fc_k = nn.Linear(d_model, d_model)
+        self.fc_v = nn.Linear(d_model, d_model)
+        self.fc_o = nn.Linear(d_model, d_model)
+
+        self.scale = torch.sqrt(torch.tensor(d_model / n_heads))
+
+    def forward(self, Q, K, V, mask = None):
+
+        Q = self.fc_q(Q) # 개단차
+        K = self.fc_k(K)
+        V = self.fc_v(V)
+
+        Q = rearrange(Q, '개 단 (헤 차) -> 개 헤 단 차', 헤 = self.n_heads) # 개단차 -> 개헤단차
+        K = rearrange(K, '개 단 (헤 차) -> 개 헤 단 차', 헤 = self.n_heads)
+        V = rearrange(V, '개 단 (헤 차) -> 개 헤 단 차', 헤 = self.n_heads)
+
+        attention_score = Q @ K.transpose(-2,-1)/self.scale # 개헤단단
+
+        if mask is not None:
+            attention_score[mask] = -1e10
+        attention_weights = torch.softmax(attention_score, dim=-1) # 개헤단단
+
+        attention = attention_weights @ V # 개헤단차
+
+        x = rearrange(attention, '개 헤 단 차 -> 개 단 (헤 차)') # 개헤단차 -> 개단차
+        x = self.fc_o(x) # 개단차
+
+        return x, attention_weights
+```
