@@ -50,13 +50,181 @@ $\beta$ : 이동 파라미터 (코드의 bias에 해당)
 $\odot$ : 요소별 곱셈 (element-wise multiplication)
 
 
-> Code 구현할 때 궁금했던 점 : alpha와 Bias의 초기화 방식의 차이점. alpha는 `torch.ones`를 사용하고 bias는 'torch.zeros'를 사용?
+> Code 구현할 때 궁금했던 점 : alpha와 Bias의 초기화 방식의 차이점. alpha는 `torch.ones`를 사용하고 bias는 `torch.zeros`를 사용?
 
 사실 큰 의미는 없는데...
-alpha를 1로 초기화하는 것은 항등 변환(identity transformation)을 하는 것과 같습니다. 입력값을 크게 변환하지 않도록 설정하는 것이죠. 그리고 `nn.Parameter()`로 설정이 되어 있어서 점진적으로 모델이 천천히 스케일을 조정하도록 허용합니다. 또한 bias를 0으로 초기화하는 이유는 정규화된 입력의 평균을 0으로 유지하는 것입니다. 그리고 불필요한 초기 편향을 방지하는 것이죠. 
+alpha를 1로 초기화하는 것은 **항등 변환(identity transformation)** 을 하는 것과 같습니다. 입력값을 크게 변환하지 않도록 설정하는 것이죠. 그리고 `nn.Parameter()`로 설정이 되어 있어서 점진적으로 모델이 천천히 스케일을 조정하도록 허용합니다. 또한 bias를 0으로 초기화하는 이유는 정규화된 입력의 평균을 0으로 유지하는 것입니다. 그리고 불필요한 초기 편향을 방지하는 것이죠. 
 
 
 ``` python
 self.alpha = nn.Parameter(torch.ones(1)) # Multiplied
 self.bias = nn.Parameter(torch.zeros(1)) # Added 
+```
+---
+
+
+# Feed Forward
+
+Feed Forward는 $FFN(x) = max(0,xW_1 + b_1)W_2 + b_2$ 로 정의됩니다. 
+
+첫 번째 선형 변환인 $xW_1 + b_1$ 을 `nn.Linear`를 통해 구현해야 합니다.
+
+우선 `nn.Linear(in_features, out_features)` 는 $y = xW^T + b$ 연산을 수행합니다.
+
+입력에 가중치 행렬을 곱하고 편향을 더하는 연산을 수행하는 것이죠. 
+`nn.Linear()`가 수식의 행렬 곱셈과 편향 덧셈을 모두 자동적으로 처리하기 때문에 코드가 수식보다 더 간단해 보입니다. 사실상 차원만 계산하면 되는 것이죠. 아래의 수식은 `nn.Linear()`가 실제로 내부에서 동작하는 연산입니다. '@'는 행렬의 곱셈을 나타냅니다. 
+
+```
+output = input @ weight.T + bias
+```
+
+![Alt text](<Screenshot from 2024-08-06 12-38-32.png>)
+
+
+forward() 함수를 기준으로 저 수식과 코드가 어떻게 매칭되는지 자세히 봐야합니다.
+
+우선 'FeedForwardBlock' 클래스에서 받아오는 매개변수는 `d_model` 과 `d_ff`,'dropout' 입니다.
+`d_model`은 앞에서 계속 사용한 것과 동일하게 모델의 기본 차원이고 논문에서 512로 고정하고 있습니다. 
+`d_ff`는 Feed-Forward Network의 내부(hidden)차원이고 중간 층의 뉴런 수입니다. 
+논문에서 `d_ff`의 크기는 2048로 설정하고 보통 `d_model`의 4배 정도로 설정합니다. 
+
+> BERT에서 d_model은 768 , d_ff는 3072로 설정했고 GPT-2 모델도 동일합니다.
+
+첫 번째 선형 변환은 `self.linear_1` 으로 정의되어 있습니다. 
+$FFN(x)$ 수식에서 $xW_1 + b_1$ 부분에 해당합니다. 
+
+```python
+self.linear_1 = nn.Linear(d_model, d_ff)
+```
+
+두 번째 선형 변환은 `self.linear_2` 로 정의되어 있으며 확장된 차원 `d_ff`에서 원래의 `d_model` 차원으로 축소합니다. $FFN(x)$ 수식에서 $(...)W_2+b_2$ 부분에 해당합니다. 
+
+```python
+self.linear_2 = nn.Linear(d_ff, d_model)
+```
+
+그래서 forward() 함수의 마지막 return 값을 보면 아래와 같이 정의되어 있습니다.
+$max(0,xW_1+b_1)$ 부분은 `torch.relu()`로 처리합니다.
+
+```python
+self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
+```
+
+---
+
+# Multi-Head Attention 
+
+![Alt text](<Screenshot from 2024-08-06 14-56-14.png>)
+
+
+$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})$ 
+
+$head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)$
+
+$Multihead(Q,K,V) = Concat(head_i, ... head_h)W^O$
+
+Query, Key, Value를 생성하는 선형 변환을 정의합니다.
+입력을 Query,Key,Value 벡터로 변환하는 과정입니다. 
+
+> 각 Linear 층은 가중치 행렬 W와 편향 b를 포함합니다. 입력 x에 대해서 각 변환은 $xW^T + b$ 연산을 수행합니다. 이 변환들은 입력을 각각 Query, Key, Value 공간으로 투영합니다. 
+이 변환들은 각 어텐션 헤드에 대해 공유됩니다. 실제로는 이 변환 후에 결과를 여러 헤드로 분할합니다.(head=8). 
+
+
+이 선형 변환들을 통해 입력 데이터를 어텐션 메커니즘에 적합한 형태로 변환합니다. 
+각 변환은 입력의 다른 측면을 강조하거나 추출하여, 어텐션 계산에 사용될 준비를 합니다. 
+
+```python
+class MultiHeadAttention(nn.Module):
+
+    def __init__(self, d_model:int, h: int, dropout: float) -> None: 
+        super().__init__()
+        self.d_model = d_model 
+        self.h = h 
+        assert d_model % h ==0 , "d_model is not divisible by h"
+
+        self.d_k = d_model // h
+        self.w_q = nn.Linear(d_model, d_model) # Wq
+        self.w_k = nn.Linear(d_model, d_model) # Wk
+        self.w_v = nn.Linear(d_model, d_model) # Wv 
+
+        self.w_o = nn.Linear(d_model, d_model) # wo
+        self.dropout = nn.Dropout(dropout)  
+```
+
+`attention` 정적 메서드(staticmethod)는 점곱(Scaled Dot-Product Attention)을 구현합니다. 
+`@staticmethod` 데코레이터는 메서드를 정적 메서드로 정의하고 클래스의 인스턴스 없이 직접 호출할 수 있도록 합니다. 
+
+$$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
+
+위 수식을 통해 어텐션 스코어를 계산할 수 있습니다. 
+`query @ key.transpose(-2,-1)`를 통해 행렬 곱 연산을 합니다. 위의 수식에서 $QK^T$ 에 해당하는 부분이죠. 
+`math.sqrt(d_k)`는 $\sqrt{d_k}$ 에 해당하는 부분입니다.
+논문에서는 d_k로 나누는 이유를 다음과 같이 설명합니다.
+
+ *We suspect that for large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients*
+
+'$d_k$의 값이 클 경우, 내적의 크기가 커져서 Softmax 함수를 극도로 작은 기울기를 가진 영역으로 밀어낼 수 있다고 생각합니다.'
+
+따라서 $\sqrt{d_k}$ 이렇게 스케일링을 해주면 내적의 분산을 1로 정규화할 수 있습니다. 
+요약하자면, 수치적 안정성을 위해서 스케일링을 해주는 것입니다. 큰 차원에서 내적 값이 지나치게 커지는 것을 방지하고, softmax 함수가 적절한 범위에서 작동하도록 보장합니다. 이를 통해 모델의 학습 과정이 더 안정적이고 효과적으로 이루어질 수 있습니다.  
+
+마지막에 return 되는 값은 `attention_scores @ value` 와 `attention_scores`입니다. 
+
+`attention_scores @ value`는 각 위치에 대해서 모든 다른 위치의 value들의 가중 합을 나타냅니다.
+이 결과를 통해서 각 위치가 시퀀스의 다른 부분들로부터 어떤 정보를 잘 **주목**했는지를 반영합니다.
+
+`attention_scores`는 Query와 Key 쌍의 관계를 어떻게 평가했는지를 보여줍니다. 
+점수가 높을수록 강한 관계를 나타내고 낮은 점수는 약한 관계를 나타냅니다.
+
+두 값을 함께 반환함으로써 어텐션의 결과를 얻을 수 있고 어텐션 과정 자체를 분석할 수 있습니다.
+추후 `attention_scores`를 시각화하여 모델이 입력의 어느 부분에 집중했는지를 시각화하는 데 사용할 수 있습니다. 
+
+```python
+@staticmethod # 클래스의 인스턴스 생성 없이 바로 접근 가능
+    def attention(query, key, value, mask, dropout: nn.Dropout):
+        d_k = query.shape[-1]
+        # (Batch, h, Seq_Len, d_k) --> (Batch, h, Seq_Len, Seq_Len) 
+        attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k) # (Batch, h, seq_len, d_k) x (Batch, h, d_k, seq_len) = (Batch, h, seq_len, seq_len)
+        if mask is not None:
+            attention_scores.masked_fill(mask == 0, -1e9) # mask가 0인 부분에 -1e9를 넣어줌
+        attention_scores = attention_scores.softmax(dim=-1) # (Batch, h, seq_len, seq_len)
+        if dropout is not None:
+            attention_scores = dropout(attention_scores)
+        return (attention_scores @ value), attention_scores 
+```
+
+`Multi-Head Attention`의 전체 과정을 구현한 코드입니다. 
+`view()`와 `transpose()`의 동작 과정을 명확하게 이해하셔야 합니다. 
+`code.md` 파일에 해당 내용을 정리했으니 그 부분을 확인하시면 됩니다.
+
+(개,단,차)로 이루어져 있는데 여기에 view()를 적용합니다. 
+`query = query.view(query.shape[0], query.sahpe[1], self.h, self.d_k).transpose(1,2)` 이렇게 적용하고 있죠? 
+
+`query.shape[0]`은 (개,단,차)에서 첫 번째 '개'는 Batch를 의미하므로 Batch의 크기가 됩니다.
+`query.shape[1]`은 (개,단,차)에서 두 번째 '단'은 단어의 길이니까 Seq_len의 길이가 되는 것이죠.
+
+view()는 형상만 바꾸어주는 것이므로 중간에 `h`라는 헤드의 개수를 껴주는 것이죠. 그리고 각 헤드의 차원도 넣어줍니다. 결과적으로 (Batch, Seq_len, d_model) 이런 형상을 (Batch, seq_len, h, d_k) 이렇게 바꿔주는 것입니다.
+
+`transpose(1,2)`를 통해서 첫 번째와 두 번째 차원을 교환합니다. 그렇게 하면 (Batch, h, seq_len, d_k) 이런 형태가 됩니다. 
+
+이런 과정을 거치는 이유는 `d_model`의 차원을 `h`개의 `d_k` 차원으로 분할하기 위해서죠. 다중 헤드를 분리하는 것입니다. 그리고 각 헤드의 차원을 앞으로 가져와서 각 헤드가 독립적으로 어텐션을 계산할 수 있도록 해주는 것이죠. 
+
+```python
+def forward(self, q, k, v, mask = None):
+        query = self.w_q(q) #(Batch, Seq_len, d_model) --> (Batch, Seq_len, d_model)
+        key = self.w_k(k)   #(Batch, Seq_len, d_model) --> (Batch, Seq_len, d_model)
+        value = self.w_v(v) #(Batch, Seq_len, d_model) --> (Batch, Seq_len, d_model)
+
+        # (Batch, seq_len, d_model) -> ( Batch, seq_len, h, d_k) -> (Batch, h, seq_len, d_k)    
+        query = query.view(query.shape[0], query.sahpe[1], self.h, self.d_k).transpose(1,2)
+        key = query.view(key.shape[0], key.sahpe[1], self.h, self.d_k).transpose(1,2)
+        value = value.view(value.shape[0], value.sahpe[1], self.h, self.d_k).transpose(1,2) 
+        
+        x, self.attention_scores = MultiHeadAttention.attention(query, key, value, mask, self.dropout)
+
+        # (Batch, h, Seq_Len, d_k) --> (Batch, Seq_Len, h, d_k) --> (Batch, Seq_Len, d_model)
+        x = x.transpose(1,2).contiguous().view(x.shape[0], -1, self.h * self.d_k)
+
+        # (Batch, Seq_Len, d_model) --> (Batch, Seq_Len, d_model)   
+        return self.w_o(x)
 ```
