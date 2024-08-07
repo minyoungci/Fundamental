@@ -278,3 +278,82 @@ class MHA(nn.Module):
 
         return x, attention_weights
 ```
+
+---
+
+# Encoder
+
+![
+](image-1.png)
+
+`EncoderBlock` 클래스는 인코더의 단일 블록을 나타냅니다. 
+위 구조를 확인해보면 앞서 구현한 `Multi-Head Attention` 블록과 `Feed Forward` 블록, 그리고 두 개의 `residual connection`이 연결되어 있습니다. `inputs` 에서 `Multi-Head Attention`로 들어가는 세 개의 화살표는 각 Query, Key, Value 입니다. 
+
+![Alt text](<Screenshot from 2024-08-07 13-16-03.png>)
+
+본 논문에서 `Encoder`는 6개의 동일한 층으로 구성된다고 설명합니다. 여기서 말하는 6개의 층은 `EncoderBlock`을 의미합니다. 따라서 'EncoderBlock'은 하나의 "층"을 나타내는 것이죠. 
+그리고 아래의 `Encoder` 클래스는 6개의 동일한 `EncoderBlock`으로 구성됩니다. 언급된 `sublayer`는 각 `EncoderBlock`에 포함된 `self-attention sublayer`와 `feed-forward sublayer`를 의미합니다.
+
+인코더 구조를 나타내는 그림과 논문을 보면 각 서브층(self-attention과 feed-forward) 주변에 `residual connection`을 사용하는 것을 확인할 수 있습니다. 이는 `LayerNorm(x + Sublayer(x))`의 형태로 구현됩니다.
+
+```python
+class ResidualConnection(nn.Module):
+    def __init__(self, dropout: float) -> None :
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)  
+        self.norm = LayerNormalization()
+
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
+```
+
+`x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))`
+이 코드는 `Multi-Head Attention`을 수행합니다. `x`가 세 번 들어가는 이유는 self-attention에서 Query, Key, Value가 모두 같은 입력(x)에서 나오기 때문이죠? 이 부분을 `lambda` 함수를 사용해서 `residual_connection`에 전달합니다. 그러면 `residual_connection`에서 `x`는 원본 입력값을 받고 `sublayer`에는 `lambda`가 적용된 'Multi-Head Attention`의 출력값을 받겠죠? 
+
+`x = self.residual_connections[1](x, self.feed_forward_block)`
+self-attention을 통과한 결과를 `feed_forawrd` 네트워크에 통과시킵니다. 마찬가지로 `residual_connection`을 적용합니다.   
+
+```python
+class EncoderBlock(nn.Module):
+    def __init__(self, self_attention_block: MultiHeadAttention, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block    
+        self.residual_connections = nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+
+    def forward(self, x, src_mask): 
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
+        x = self.residual_connections[1](x, self.feed_forward_block)
+
+        return x 
+```
+
+`layers`는 이미 여러 `EncoderBlock`들을 포함하고 있는 `nn.ModuleList`입니다. 이 리스트는 `Encoder` 클래스 외부에서 생성되어 전달됩니다. 
+
+```python
+class Encoder(nn.Module):
+    def __init__(self, layers: nn.ModuleList) -> None:
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, src_mask):
+        for layer in self.layers:
+            x = layer(x, src_mask)
+        return self.norm(x) 
+```
+
+### Encoder의 동작 과정 정리 
+
+입력값인 `x`가 `ResidualConnection[0]`으로 들어갑니다. 
+
+`ResidualConnection[0]`의 내부 :
+    1. `self.norm(x)`: 원본 `x`에 `Layer Normalization`을 적용합니다.
+    2. `sublayer(self.norm(x))`: 정규화된 `x`를 `MHA (Multi-Head Attention)`에 통과시킵니다.
+    3. `self.dropout(...)`: `MHA`의 출력에 dropout을 적용합니다. 
+    4. 원래의 `x`와 처리된 결과가 더해집니다. (`ResidualConnection`)
+
+따라서 원본 `x` 값이 보존되어 더해지는 것이 residual connection의 핵심이고 `MHA`를 거친 `x` 값이 원본 `x`에 더해집니다. 
+
+> Transformer 모델이 깊은 구조에서도 효과적으로 학습할 수 있게 하는 핵심 요소
+
