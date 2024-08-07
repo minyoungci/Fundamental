@@ -114,6 +114,10 @@ self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
 
 # Multi-Head Attention 
 
+## Theory
+
+
+
 ![Alt text](<Screenshot from 2024-08-06 14-56-14.png>)
 
 
@@ -178,6 +182,8 @@ $$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 
 두 값을 함께 반환함으로써 어텐션의 결과를 얻을 수 있고 어텐션 과정 자체를 분석할 수 있습니다.
 추후 `attention_scores`를 시각화하여 모델이 입력의 어느 부분에 집중했는지를 시각화하는 데 사용할 수 있습니다. 
+
+![Alt text](<Screenshot from 2024-08-07 14-54-39.png>)
 
 ```python
 @staticmethod # 클래스의 인스턴스 생성 없이 바로 접근 가능
@@ -357,3 +363,71 @@ class Encoder(nn.Module):
 
 > Transformer 모델이 깊은 구조에서도 효과적으로 학습할 수 있게 하는 핵심 요소
 
+---
+
+# Decoder 
+
+![Alt text](image-2.png)
+
+
+
+![Alt text](<Screenshot from 2024-08-07 14-30-26.png>)
+
+`Encoder`의 구조와 다르게 `Decoder`에는 세 개의 block이 있습니다.(Self-attention, Cross-attention, Feed-forward)
+
+`x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask))`
+
+
+첫 번째 `Multi-Head Attention` 블록은 논문에서 `masked multi-head attention` 이라고 합니다. `Decoder`에서는 현재 위치의 토큰이 미래의 토큰 정보를 참조하지 못하게 해야합니다. 이는 학습할 때 미래의 단어를 미리 보는 것을 방지하는 '치팅'을 방지하고 추론 시 auto-regressive한 생성을 가능하게 합니다. 
+
+`tgt_mask`는 일반적으로 상삼각행렬 형태의 마스크입니다. 현재 위치보다 이후에 해당하는 부분을 매우 작은 값(예: -inf)으로 설정합니다. 
+
+`self_attention_block` 내부에서 `attention scores`를 계산할 때 `tgt_mask`가 적용됩니다. 마스크된 위치의 `attention score`가 매우 작아지므로 `softmax` 후에는 실질적으로 0이 됩니다. 결과적으로 현재 토큰은 자신과 이전 토큰들만을 참조하게 됩니다.
+
+![Alt text](<Screenshot from 2024-08-07 14-56-20.png>)
+
+`x = self.residual_connections[1](x, lambda x: self.src_attention_block(x, encoder_output, encoder_output, src_mask))`
+
+두 번째 `Cross attention`으로 정의된 부분은 `Encoder`의 출력과 `Decoder`의 현재 상태를 연결하는 역할을 합니다. 그림을 보면 더 정확하게 알 수 있는데요, Query는 `Decoder`의 현재 상태인 `x`를 의미합니다. Key와 Value는 `Encoder`의 출력입니다. `src_mask`는 인코더 입력의 패딩을 마스킹하는 데 사용됩니다.  
+
+정리하자면
+`Encoder`와 `Decoder`는 똑같은 `Multi-Head Attention`을 사용하는데 Query로는 해당 `Decoder Layer`에서 얻은 임베딩 벡터를, Key Value 로는 마지막 `Econder Layer`의 출력 임베딩 벡터를 사용합니다. 이렇게 하면 다음 단어가 어떤 것이 출력 되야할지를 출력 문장의 Query로 물어보고 입력 문장의 Key Value를 보고 알아낼 수 있는 것이죠. 그런데 이 Query는 `Multi-Head Attention`을 통과한 놈이니까 출력 문장의 각 단어에 대한 의미를 잘 담은 Query라는 것이죠. 그렇게 `context vector`를 완성하고 그림의 `Add&Norm`을 통과합니다. 
+
+`x = self.residual_connections[2](x, self.feed_forward_block)`
+
+마지막 라인은 이전과 동일하게 추가적인 비선형 변환을 적용하는 것이죠.
+
+```python
+class DecoderBlock(nn.Module):
+
+    def __init__(self, self_attention_block: MultiHeadAttention, cross_attention_block: MultiHeadAttention, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.src_attention_block = src_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connections = nn.Module([ResidualConnection(dropout) for _ in range(3)])   
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask)) 
+        x = self.residual_connections[1](x, lambda x: self.src_attention_block(x, encoder_output, encoder_output, src_mask))
+        x = self.residual_connections[2](x, self.feed_forward_block)
+        return x
+```
+
+이 구조는 Transformer 모델의 디코더 부분을 효과적으로 구현합니다. 각 `DecoderBlock이` `self-attention`, `cross-attention`, 그리고 `feed-forward` 네트워크를 포함하고 있으며, 이들이 여러 층으로 쌓여 복잡한 시퀀스 생성 작업을 수행할 수 있게 합니다.
+`Encoder`와의 주요 차이점은 디코더가 `encoder_output`을 입력으로 받아 `cross-attention`을 수행한다는 점과, `tgt_mask`를 사용하여 자기회귀적(autoregressive) 생성을 가능하게 한다는 점입니다.
+
+
+```python
+class Decoder(nn.Module):
+
+    def __init__(self, layers: nn.ModuleList) -> None:
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask)
+        return self.norm(x)
+```
