@@ -145,14 +145,86 @@ self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
 
 # Multi-Head Attention 
 
-## Theory
+## Abstract
 
 
+트랜스포머가 학습하는 layer에 대해서 알아보겠습니다. 입력 문장 내에서 단어 간의 관계를 학습시키기 위해 **내적**을 사용한다고 했죠. 그런데, 어떤 단어와 단어가 관계가 깊은지 즉, 어떤 단어를 주목해야 할지를 AI가 학습해서 알아내야 할텐데 내적은 파라미터가 필요한 연산이 아닙니다. 
 
-![Alt text](<Screenshot from 2024-08-06 14-56-14.png>)
+우리는 내적할 단어 임베딩 벡터를 **선형 변환**하는 **FC layer**를 앞에 놓고 얘를 학습시키는 것입니다. 
+여기서 FC layer는 뭘 하는거죠? FC layer를 하나 통과한다는 것은 어떤 연산을 해주는다는 것일까요.
+FC layer는 weight matrix 곱하고 bias vector를 더하는 것이죠. 
+matrix를 곱한다는 것은 선형 변환을 의미하는 것입니다. 그래서 행렬이 학습된다는 것은 선형 변환을 어떻게 할까를 학습한다는 것과 일맥상통합니다.  
+
+<figure>
+  <img src="Screenshot from 2024-08-09 09-39-43.png" alt="설명" width="1000">
+  <figcaption style="text-align: center;">figure1</figcaption>
+</figure>
+
+> 각 Linear 층은 가중치 행렬 W와 편향 b를 포함합니다. 입력 x에 대해서 각 변환은 $xW^T + b$ 연산을 수행합니다. 이 변환들은 입력을 각각 Query, Key, Value 공간으로 투영합니다. 
+이 변환들은 각 어텐션 헤드에 대해 공유됩니다. 실제로는 이 변환 후에 결과를 여러 헤드로 분할합니다.(head=8). 
+
+`Multi-Head Attention` 클래스를 들어가면 가장 먼저 만나게 되는 것이 저 `nn.Linear`입니다.
+First stage에서 만든 32x50x512를 (*편의상 1x3x512(저는 학생 입니다)로 설정.*)
+
+`fc_q = nn.Linear(512,64)` 여기도
+`fc_k = nn.Linear(512,64)` 여기도
+`fc_v = nn.Linear(512,64)` 여기도
+
+통과시켜서 Q,K,V를 얻습니다. 그림에서는 통과시키기 전에도 QKV로 표기합니다. 
+앞서 단어 임베딩과 위치 임베딩을 더한 상태에서 Linear를 **병렬적으로** 세 번 통과시킵니다. 
+
+위에서 예시로 설정한 1x3x512를 `nn.Linear(512,64)`에 통과시키면 '1x3x512 -> 1x3x64' 이렇게 됩니다. 아주 중요한 개념들이 등장하죠. 
+
+- Query는 관계를 물어보는 기준 단어 벡터가 됩니다. (질문을 잘하자)
+- Key는 Query와 관계를 알아볼 단어 벡터가 됩니다. (답변을 잘하자)
+- Value는 위 단어의 의미를 담은 벡터가 됩니다.  (표현을 잘하자)
 
 
-$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})$ 
+![Alt text](20240809_021825095_iOS.png)
+
+
+*We suspect that for large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients*
+
+'$d_k$의 값이 클 경우, 내적의 크기가 커져서 Softmax 함수를 극도로 작은 기울기를 가진 영역으로 밀어낼 수 있다고 생각합니다.'
+
+
+$$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$ 
+
+
+$\sqrt{d_k}$ 는 key의 dimension에 루트를 씌운 건데요, 위의 예시에서는 $\sqrt{64}$ 죠?
+$d_k$가 클수록 내적의 분산이 자꾸 커져서 $\sqrt{d_k}$로 나눠 줌으로써 softmax 미분이 작아지는 것을 방지하는 것입니다. $d_k$가 512라고 하면 내적할 때 분산이 커질 수 밖에 없습니다. 길이가 길면 내적 결과의 분산이 커지는 것을 방지하는 것이죠. softmax를 통과하기 전의 분산이 크면 미분값이 작아집니다. 
+
+그 다음 V를 곱해주고 결과를 얻을 수 있습니다.
+
+![Alt text](20240809_023920391_iOS.png)
+
+여기서 마지막 결과물의 의미를 잘 생각해봅시다.
+앞서 봤던 QKV에 `nn.Linear(512,64)` 를 통과하고 위의 그림에서 처럼 연산하는 행위를 한 번 한거예요.(figure1의 잔상)
+이 행위를 총 8번 해줘야합니다. 이게 바로 `Multi-Head Attention` 입니다.
+
+`fc_q1 = nn.Linear(512,64)` , `fc_q2 = nn.Linear(512,64)` , `fc_q3 = nn.Linear(512,64)` ... `fc_q8 = nn.Linear(512,64)`
+`fc_k1 = nn.Linear(512,64)`, `fc_k2 = nn.Linear(512,64)` ,`fc_k3 = nn.Linear(512,64)` ... `fc_k8 = nn.Linear(512,64)`
+`fc_v1 = nn.Linear(512,64)` , `fc_v2 = nn.Linear(512,64)` , `fc_v3 = nn.Linear(512,64)` ... `fc_v8 = nn.Linear(512,64)` 
+
+마치 conv 필터 여러개를 사용 하여 여러개 특징 맵을 얻는 것과 비슷합니다. 이렇게 해서 얻는 효과는 무엇일까요? 이제 1x3x64 짜리 8개를 가로로 concat 해주어 1x3x512를 얻을 수 있습니다.
+맨 위에 `nn.Linear(512,512)`를 통과하여 도로 1x3x512로 만들어줍니다. (입력과 같은 사이즈)
+
+---
+
+Maksed MHA는 현재 단어 포함 이전 단어들만 참조하는 방법입니다. 
+
+Decoder에서는 똑같은 MHA 모듈을 사용하는데 Q 로는 해당 Decoder layer에서 얻은 임베딩 벡터를, KV로는 마지막 Encoder layer의 출력 임베딩 벡터를 사용합니다. 이렇게 하면 다음 단어가 어떤 단어가 출력이 되야하는지를 출력 문장의 Q로 물어보고 입력 문장의 KV를 보고 알아내는 것이죠. 그런데 이 Q는 MHA를 이미 통과했으니 출력 문장의 각 단어에 대한 의미를 잘 담은 Q라고 할 수 있습니다. 그렇게 context vector를 완성하고 [ADD&NORM]을 통과하는 것이죠. 그리고 같은 구조의 Feed Forward를 통과합니다. 
+
+![Alt text](20240809_031333134_iOS.png)
+
+
+마지막 단계에서는 `Decoder`의 마지막 레이어 출력을 사용합니다. `nn.Linear(512,5972)`를 통과시키면 끝납니다. softmax 통과 시키고 cross-entropy로 Loss를 정의합니다. 
+추론 시에는 가장 높은 확률의 단어를 뱉어내는 것입니다. 
+
+![Alt text](<Screenshot from 2024-08-09 12-36-11.png>)
+
+
+## Code review
 
 $head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)$
 
@@ -160,12 +232,6 @@ $Multihead(Q,K,V) = Concat(head_i, ... head_h)W^O$
 
 Query, Key, Value를 생성하는 선형 변환을 정의합니다.
 입력을 Query,Key,Value 벡터로 변환하는 과정입니다. 
-
-
-
-
-> 각 Linear 층은 가중치 행렬 W와 편향 b를 포함합니다. 입력 x에 대해서 각 변환은 $xW^T + b$ 연산을 수행합니다. 이 변환들은 입력을 각각 Query, Key, Value 공간으로 투영합니다. 
-이 변환들은 각 어텐션 헤드에 대해 공유됩니다. 실제로는 이 변환 후에 결과를 여러 헤드로 분할합니다.(head=8). 
 
 
 이 선형 변환들을 통해 입력 데이터를 어텐션 메커니즘에 적합한 형태로 변환합니다. 
@@ -197,11 +263,6 @@ $$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 위 수식을 통해 어텐션 스코어를 계산할 수 있습니다. 
 `query @ key.transpose(-2,-1)`를 통해 행렬 곱 연산을 합니다. 위의 수식에서 $QK^T$ 에 해당하는 부분이죠. 
 `math.sqrt(d_k)`는 $\sqrt{d_k}$ 에 해당하는 부분입니다.
-논문에서는 d_k로 나누는 이유를 다음과 같이 설명합니다.
-
- *We suspect that for large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients*
-
-'$d_k$의 값이 클 경우, 내적의 크기가 커져서 Softmax 함수를 극도로 작은 기울기를 가진 영역으로 밀어낼 수 있다고 생각합니다.'
 
 따라서 $\sqrt{d_k}$ 이렇게 스케일링을 해주면 내적의 분산을 1로 정규화할 수 있습니다. 
 요약하자면, 수치적 안정성을 위해서 스케일링을 해주는 것입니다. 큰 차원에서 내적 값이 지나치게 커지는 것을 방지하고, softmax 함수가 적절한 범위에서 작동하도록 보장합니다. 이를 통해 모델의 학습 과정이 더 안정적이고 효과적으로 이루어질 수 있습니다.  
