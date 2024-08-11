@@ -431,6 +431,8 @@ class EncoderBlock(nn.Module):
 
 `layers`는 이미 여러 `EncoderBlock`들을 포함하고 있는 `nn.ModuleList`입니다. 이 리스트는 `Encoder` 클래스 외부에서 생성되어 전달됩니다. 
 
+소스 마스크인 `src_mask`는 배치 처리를 위해서 모든 입력 시퀀스를 동일한 길이로 맞추기 위해 패딩을 사용하는 것입니다. 실제 입력 토큰과 패딩 토큰을 구분하여, 모델이 유효한 입력에만 집중하도록 만들어줍니다. 예를 들어 '나는 학생 입니다.' 라는 문장도 있고, '나는 딥러닝을 공부하는 학생 입니다.'라는 문장도 있다고 해봅시다. 두 문장의 길이는 다르죠 ? 그래서 두 문장의 길이를 맞춰주기 위해서 패딩 처리를 해주는 것입니다.    
+
 ```python
 class Encoder(nn.Module):
     def __init__(self, layers: nn.ModuleList) -> None:
@@ -531,11 +533,13 @@ class Decoder(nn.Module):
 
 ## Transofrmer
 
+이전에 구현했던 것들을 합쳐서 `Transformer` 클래스로 만들어줍니다. 
+본 논문에서 언급한 요소들을 모두 합치는 단계입니다. 
 
+`encode` 메서드는 소스 문장과 소스 마스크를 입력으로 받습니다. 소스 문장을 임베딩하고 위치 인코딩을 추가한 후 인코더를 통과시킵니다. 이는 입력 시퀀스를 고차원으로 변환하는 과정입니다. `decode` 메서드는 인코더의 출력과 소스 마스크, 타겟 문장, 타겟 마스크를 입력으로 받습니다. 타겟 문장을 임베딩하고 위치 인코딩을 추가한 후 디코더를 통과시킵니다. 이 과정에서 인코더의 출력 정보를 사용하여 타겟 시퀀스를 형성합니다. `project` 메서드는 디코더의 출력을 받아 최종 출력 분포로 변환합니다. 
 
 ```python
 class Transformer(nn.Module):
-
     def __init__(self, encoder: Encoder, decoder: Decoder , src_embed: InputEmbeddings, tgt_embed: InputEmbeddings, src_pos: PositionalEncoding, tgt_pos: PositionalEncoding, projection_layer: ProjectionLayer) -> None:
         super().__init__()
         self.encoder = encoder
@@ -550,25 +554,21 @@ class Transformer(nn.Module):
         src = self.src_embed(src)
         src = self.src_pos(src)
         return self.encoder(src, src_mask)
-
     def decode(self, encoder_output, src_mask, tgt, tgt_mask):
         tgt = self.tgt_embed(tgt)
         tgt = self.tgt_pos(tgt)
         return self.decoder(tgt, encoder_output, src_mask, tgt_mask)    
-
     def project(self,x):
         return self.projection_layer(x)
 
 def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int =512, N: int =6, h: int =8, dropout: float = 0.1,  d_ff: int = 2048) -> Transformer:
-    # Create the embedding layers
+
     src_embed = InputEmbeddings(d_model, src_vocab_size)
     tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
 
-    # Create the positional encoding layers 
     src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
     tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
 
-    # Create the encoder blocks
     encoder_blocks = []
     for _ in range(N):
         encoder_self_attention_block = MultiHeadAttention(d_model, h, dropout)
@@ -576,7 +576,6 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
         encoder_block = EncoderBlock(encoder_self_attention_block, feed_forward_block, dropout)
         encoder_blocks.append(encoder_block)
 
-        # create the decoder blocks 
     decoder_blocks = [] 
     for _ in range(n):
         decoder_self_attention_block = MultiHeadAttention(d_model, h, dropout)      
@@ -592,7 +591,6 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
 
     transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer)
 
-    # Initialize the parameters with Glorot initialization
     for p in transformer.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
