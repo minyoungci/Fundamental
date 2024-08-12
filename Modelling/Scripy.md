@@ -17,20 +17,43 @@
 
 ### InputEmbeddings
 
-`nn.Embedding`(vocab_size, d_model)은 (vocab_size, d_model) 크기의 가중치 행렬을 생성합니다.
-
-- 각 행은 하나의 토큰에 대한 d_model 차원의 임베딩 벡터입니다. : 행뽑기다
-
-입력으로 정수 인덱스(0에서 vocab_size-1 사이의 값)가 주어지면, 해당 인덱스에 해당하는 행(벡터)을 반환합니다.
-
 ![Alt text](<Screenshot from 2024-08-02 21-00-59.png>)
 
 
 ### PositionalEncoding
 
+이미지에서는 input shape이 개,채,행,열이라면 NLP에서는 개,단,차 입니다.
+예를 들어서 32x50x512의 의미는? 
+- 32개의 문장과 각 문장은 50개의 단어로 이루어져있고 각 단어는 512차원의 벡터로 구성
+
+32x50x512 를 `nn.Linear(512,64)`에 통과하면 결과 shape은 어떻게 될까요? 32x50x64가 나옵니다.
+
+맨 처음에 inputs는 32x50x7851 이런식으로 one-hot 되어있습니다. 여기서 7851에 대한 이해를 돕기위한 예시를 보여드리겠습니다. 
+
+사실은 '저는'=[1 0 0] '학생' = [0 1 0] '입니다' = [0 0 1] 이렇게 되어있는게 아니고 첫 번째 단어는 [0 ... 1 0 ...] 두 번째 단어가 [0 ... 0 1 ..] 세 번째 단어가 [0 0 1 0 ..] 이렇게 되어있는 것이죠.
+1482 번째에 1 나머지는 0 , 5821 번째에 1 나머지는 0, 243 번째에 1 나머지는 0 이렇게 말이죠. 
+실제 구현에서는 32x50 으로, 1482와 같은 인덱스만 적혀있습니다.
+
+따라서 7851 이라는 것은 내가 사용할 수 있는 한글 단어의 총 개수라는 뜻입니다. 
+
+32x50x7851을 `nn.Linear(7851,512)` 통과시키면 그게 단어 임베딩 벡터 (32x50x512) 입니다. (실제 구현에서는 `nn.Embedding`사용.)
+
+![Alt text](<Screenshot from 2024-08-12 11-01-48.png>)
+
+7851이 [0 0 0 1 0 0 ...] 이라고 해봅시다. 거기에 weight matrix를 곱한다는 것은 어떤 의미일까요 ? 
+위의 그림에서 4번째 인덱스에 해당하는 weight 행벡터가 나오는게 보이시죠? 
+
+그런데 이렇게만 하면 RNN과 달리 단어의 순서에 대한 정보를 줄 수 없습니다. 
 단어의 순서에 대한 정보를 주기위해서 단어의 위치를 one-hot (32x50xmax_len) 해서 `nn.Linear(max_len, 512)` 통과시키면 그게 위치 임베딩 벡터입니다.  예를 들어, 첫 번째 단어는 [1 0 0 0 ...] 두 번째 단어가 [0 1 0 0  ..] 세 번째 단어가 [0 0 1 0 ..] 이라면 얘네를 `nn.Linear`에 통과시키는 것이죠. 여기서 max_len은 가장 긴 문장의 단어 수 입니다. (넉넉하게 잡으면 됩니다. 예를 들어 100으로 잡을 경우) 
-즉, `nn.Linear(100,512)`를 통과시키면 32x50x100 -> 32x50x512 가 됩니다. (실제 구현에서는 `nn.Embedding`사용.)
+
+`nn.Lienar(100,512)`를 통과시키면 32x50x100 -> 32x50x512 가 되는 것이죠.  
 이제 둘을 더하면 (단어 임베딩 벡터 + 위치 임베딩 벡터) self-attention 할 준비가 된 것이죠. 
+
+코드를 보면 `nn.Embedding(vocab_size, d_model)`은 정수 인덱스를 입력으로 받고 해당 인덱스에 대응하는 임베딩 벡터로 출력합니다. Embedding 레이어는 (vocab_size, d_model) 크기의 가중치 행렬을 가지고 각 행은 하나의 토큰에 대응하는 d_model 차원의 벡터입니다. 앞의 예시에서 7851x512 를 통과했을 때 나오는 값이 단어 임베딩 벡터라는 것과 같은 의미죠.
+
+--- 
+
+![Alt text](<Screenshot from 2024-08-05 23-04-34.png>)
 
 순서 정보가 왜 중요할까요? 
 예를 들어 "아니 다 오르는데 왜 테슬라만 떨어져?" vs "아니 테슬라만 오르는데 왜 다 떨어져?" 
@@ -46,8 +69,6 @@
 
 하지만 트랜스포머 논문에서는 위와 같은 방식으로 학습시키지는 않았고 위치별로 다른, 고정된 벡터를 사용합니다. 
 
-![Alt text](<Screenshot from 2024-08-05 23-04-34.png>)
-
 > $pos$ 는 단어의 위치 , $i$는 0~255 
 
 위의 수식처럼 sin과 cos값이 번갈아 나오는 특이한 형태입니다. 간단히 말하자면 그림에서 0번째 가로줄을 0 번째 단어의 임베딩 벡터에, 1번째 가로줄을 1번째 단어의 임베딩 벡터에 더해주는 것입니다. 
@@ -58,8 +79,6 @@
 forward 함수에서 미리 계산된 positional encoding 행렬, 모든 배치, 현재 입력 시퀀스의 길이만큼 선택, 모든 임베딩 차원을 선택합니다. ` requires_grad_(False) `이 부분은 선택된 positional encoding에 대해 그래디언트 계산을 비활성화 합니다. 이건 학습되는 파라미터가 아니므로 백프로파게이션동안 이 부분의 그레디언트를 계산할 필요가 없습니다. 
 
 ### Layer Normalization
-
-
 
 Transformer 모델에서 Layer Normalization을 사용하는 이유는 여러가지가 있습니다. 예를 들어, 학습 안정성 향상과 수렴 속도 개선 등이 일반적인 이유입니다. 
 
@@ -199,7 +218,7 @@ $d_k$가 클수록 내적의 분산이 자꾸 커져서 $\sqrt{d_k}$로 나눠 �
 ![Alt text](20240809_023920391_iOS.png)
 
 여기서 마지막 결과물의 의미를 잘 생각해봅시다.
-앞서 봤던 QKV에 `nn.Linear(512,64)` 를 통과하고 위의 그림에서 처럼 연산하는 행위를 한 번 한거예요.(figure1의 잔상)
+앞서 봤던 QKV에 `nn.Linear(512,64)` 를 통과하고 위의 그림에서처럼 연산하는 행위를 한 번 한거예요.(figure1의 잔상)
 이 행위를 총 8번 해줘야합니다. 이게 바로 `Multi-Head Attention` 입니다.
 
 `fc_q1 = nn.Linear(512,64)` , `fc_q2 = nn.Linear(512,64)` , `fc_q3 = nn.Linear(512,64)` ... `fc_q8 = nn.Linear(512,64)`
@@ -596,4 +615,35 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
             nn.init.xavier_uniform_(p)
 
     return transformer
+```
+
+---
+
+# Tokenizer 
+
+토크나이저는 텍스트를 작은 단위(token)로 분할하고 이를 모델이 이해할 수 있는 숫자로 변환하는 역할을 합니다. 아래의 코드에서는 다양한 토크나이저 중 `WordLevel` 토크나이저를 사용합니다.
+이 토크나이저는 단어 단위로 텍스트를 토큰화하며 각 고유 단어에 고유한 ID를 할당합니다. 
+
+whitespace(공백)을 기준으로 텍스트를 초기 분할하도록 설정되어 있으며 특수 토큰을 설정합니다.
+특수토큰은 '[UNK]','[PAD]', '[SOS]' ,'[EOS]' 이렇게 네 종류로 구성됩니다. 
+`min_frequency`는 단어의 최소 등장 횟수를 지정합니다.
+
+```python
+def get_all_sentences(ds, lang):
+    for item in ds :
+        yield item['translation'][lang]
+
+
+def get_or_build_tokenizer(config, ds, lang):
+    Tokenizer_path = Path(config['tokenizer_file'].format(lang))
+    if not Path.exists(tokenizer_path):
+        tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
+        tokenizer.pre_tokenizer = Whitespace()
+        trainer = WordLevelTrainer(special_tokens=['[UNK]','[PAD]', '[SOS]' ,'[EOS]'], min_frequency=2) 
+        tokenizer.train_from_iterator(get_all_sentences(ds, lang), trainer=trainer)
+        tokenizer.save(str(tokenizer_path))
+    else:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    return tokenizer
+
 ```
